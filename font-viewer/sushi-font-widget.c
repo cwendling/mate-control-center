@@ -54,7 +54,6 @@ struct _SushiFontWidgetPrivate {
   gchar *sample_string;
 
   gchar *font_name;
-  gboolean font_supports_title;
 };
 
 static GParamSpec *properties[NUM_PROPERTIES] = { NULL, };
@@ -77,13 +76,18 @@ static const gchar punctuation_text_stock[] = "0123456789.:,;(*!?')";
  * License: GPLv2+
  */
 static void
-draw_string (cairo_t *cr,
+draw_string (SushiFontWidget *self,
+             cairo_t *cr,
              GtkBorder padding,
 	     const gchar *text,
 	     gint *pos_y)
 {
   cairo_font_extents_t font_extents;
   cairo_text_extents_t extents;
+  GtkTextDirection text_dir;
+  gint pos_x;
+
+  text_dir = gtk_widget_get_direction (GTK_WIDGET (self));
 
   cairo_font_extents (cr, &font_extents);
   cairo_text_extents (cr, text, &extents);
@@ -91,8 +95,14 @@ draw_string (cairo_t *cr,
   if (pos_y != NULL)
     *pos_y += font_extents.ascent + font_extents.descent +
       extents.y_advance + padding.top;
+  if (text_dir == GTK_TEXT_DIR_LTR)
+    pos_x = padding.left;
+  else {
+    pos_x = gtk_widget_get_allocated_width (GTK_WIDGET (self)) -
+      extents.x_advance - padding.right;
+  }
 
-  cairo_move_to (cr, padding.left, *pos_y);
+  cairo_move_to (cr, pos_x, *pos_y);
   cairo_show_text (cr, text);
 
   *pos_y += padding.bottom;
@@ -134,22 +144,26 @@ check_font_contain_text (FT_Face face,
 }
 
 static gchar *
-build_charlist_for_face (FT_Face face)
+build_charlist_for_face (FT_Face face,
+                         gint *length)
 {
   GString *string;
   gulong c;
-  guint glyph;  
+  guint glyph;
+  gint total_chars = 0; 
 
   string = g_string_new (NULL);
 
-  /* exclude normal ASCII characters here */
-  c = 255;
-  glyph = 0;
+  c = FT_Get_First_Char (face, &glyph);
 
-  do {
-    c = FT_Get_Next_Char (face, c, &glyph);
+  while (glyph != 0) {
     g_string_append_unichar (string, (gunichar) c);
-  } while (glyph != 0);
+    c = FT_Get_Next_Char (face, c, &glyph);
+    total_chars++;
+  }
+
+  if (length)
+    *length = total_chars;
 
   return g_string_free (string, FALSE);
 }
@@ -164,10 +178,12 @@ random_string_from_available_chars (FT_Face face,
   gchar *ptr, *end;
 
   idx = 0;
-  chars = build_charlist_for_face (face);
+  chars = build_charlist_for_face (face, &total_chars);
+
+  if (total_chars == 0)
+    return NULL;
 
   retval = g_string_new (NULL);
-  total_chars = g_utf8_strlen (chars, -1);
 
   while (idx < n_chars) {
     rand = g_random_int_range (0, total_chars);
@@ -182,11 +198,33 @@ random_string_from_available_chars (FT_Face face,
   return g_string_free (retval, FALSE);
 }
 
+static gboolean
+set_pango_sample_string (SushiFontWidget *self)
+{
+  const gchar *sample_string;
+  gboolean retval = FALSE;
+
+  sample_string = pango_language_get_sample_string (pango_language_from_string (NULL));
+  if (check_font_contain_text (self->priv->face, sample_string))
+    retval = TRUE;
+
+  if (!retval) {
+    sample_string = pango_language_get_sample_string (pango_language_from_string ("C"));
+    if (check_font_contain_text (self->priv->face, sample_string))
+      retval = TRUE;
+  }
+
+  if (retval) {
+    g_free (self->priv->sample_string);
+    self->priv->sample_string = g_strdup (sample_string);
+  }
+
+  return retval;
+}
+
 static void
 build_strings_for_face (SushiFontWidget *self)
 {
-  const gchar *sample_string;
-
   /* if we don't have lowercase/uppercase/punctuation text in the face,
    * we omit it directly, and render a random text below.
    */
@@ -205,18 +243,22 @@ build_strings_for_face (SushiFontWidget *self)
   else
     self->priv->punctuation_text = NULL;
 
-  sample_string = pango_language_get_sample_string (NULL);
-
-  if (check_font_contain_text (self->priv->face, sample_string))
-    self->priv->sample_string = g_strdup (sample_string);
-  else
+  if (!set_pango_sample_string (self))
     self->priv->sample_string = random_string_from_available_chars (self->priv->face, 36);
 
-  self->priv->font_name =
-    g_strconcat (self->priv->face->family_name, " ",
-                 self->priv->face->style_name, NULL);
-  self->priv->font_supports_title =
-    check_font_contain_text (self->priv->face, self->priv->font_name);
+  g_free (self->priv->font_name);
+  self->priv->font_name = NULL;
+
+  if (self->priv->face->family_name != NULL) {
+    gchar *font_name = 
+      g_strconcat (self->priv->face->family_name, " ",
+                   self->priv->face->style_name, NULL);
+
+    if (check_font_contain_text (self->priv->face, font_name))
+      self->priv->font_name = font_name;
+    else
+      g_free (font_name);
+  }
 }
 
 static gint *
@@ -326,7 +368,7 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
   cairo_set_font_face (cr, font);
   cairo_font_face_destroy (font);
 
-  if (self->priv->font_supports_title) {
+  if (self->priv->font_name != NULL) {
       cairo_set_font_size (cr, title_size);
       cairo_font_extents (cr, &font_extents);
       cairo_text_extents (cr, self->priv->font_name, &extents);
@@ -360,18 +402,20 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
     pixmap_width = MAX (pixmap_width, extents.width + padding.left + padding.right);
   }
 
-  pixmap_height += SECTION_SPACING;
+  if (self->priv->sample_string != NULL) {
+    pixmap_height += SECTION_SPACING;
 
-  for (i = 0; i < n_sizes; i++) {
-    cairo_set_font_size (cr, sizes[i]);
-    cairo_font_extents (cr, &font_extents);
-    cairo_text_extents (cr, self->priv->sample_string, &extents);
-    pixmap_height += font_extents.ascent + font_extents.descent +
-      extents.y_advance + padding.top + padding.bottom;
-    pixmap_width = MAX (pixmap_width, extents.width + padding.left + padding.right);
+    for (i = 0; i < n_sizes; i++) {
+      cairo_set_font_size (cr, sizes[i]);
+      cairo_font_extents (cr, &font_extents);
+      cairo_text_extents (cr, self->priv->sample_string, &extents);
+      pixmap_height += font_extents.ascent + font_extents.descent +
+        extents.y_advance + padding.top + padding.bottom;
+      pixmap_width = MAX (pixmap_width, extents.width + padding.left + padding.right);
 
-    if ((i == 7) && (min_height != NULL))
-      *min_height = pixmap_height;
+      if ((i == 7) && (min_height != NULL))
+        *min_height = pixmap_height;
+    }
   }
 
   pixmap_height += padding.bottom + SECTION_SPACING;
@@ -450,9 +494,9 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
 
   /* draw text */
 
-  if (self->priv->font_supports_title) {
+  if (self->priv->font_name != NULL) {
     cairo_set_font_size (cr, title_size);
-    draw_string (cr, padding, self->priv->font_name, &pos_y);
+    draw_string (self, cr, padding, self->priv->font_name, &pos_y);
   }
 
   if (pos_y > allocated_height)
@@ -462,17 +506,17 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
   cairo_set_font_size (cr, alpha_size);
 
   if (self->priv->lowercase_text != NULL)
-    draw_string (cr, padding, self->priv->lowercase_text, &pos_y);
+    draw_string (self, cr, padding, self->priv->lowercase_text, &pos_y);
   if (pos_y > allocated_height)
     goto end;
 
   if (self->priv->uppercase_text != NULL)
-    draw_string (cr, padding, self->priv->uppercase_text, &pos_y);
+    draw_string (self, cr, padding, self->priv->uppercase_text, &pos_y);
   if (pos_y > allocated_height)
     goto end;
 
   if (self->priv->punctuation_text != NULL)
-    draw_string (cr, padding, self->priv->punctuation_text, &pos_y);
+    draw_string (self, cr, padding, self->priv->punctuation_text, &pos_y);
   if (pos_y > allocated_height)
     goto end;
 
@@ -480,7 +524,7 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
 
   for (i = 0; i < n_sizes; i++) {
     cairo_set_font_size (cr, sizes[i]);
-    draw_string (cr, padding, self->priv->sample_string, &pos_y);
+    draw_string (self, cr, padding, self->priv->sample_string, &pos_y);
     if (pos_y > allocated_height)
       break;
   }
