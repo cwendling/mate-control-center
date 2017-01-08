@@ -65,8 +65,6 @@ G_DEFINE_TYPE (SushiFontWidget, sushi_font_widget, GTK_TYPE_DRAWING_AREA);
 #define SURFACE_SIZE 4
 #define SECTION_SPACING 16
 
-#define TITLE_SIZE 6
-
 static const gchar lowercase_text_stock[] = "abcdefghijklmnopqrstuvwxyz";
 static const gchar uppercase_text_stock[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const gchar punctuation_text_stock[] = "0123456789.:,;(*!?')";
@@ -224,7 +222,8 @@ build_strings_for_face (SushiFontWidget *self)
 static gint *
 build_sizes_table (FT_Face face,
 		   gint *n_sizes,
-		   gint *alpha_size)
+		   gint *alpha_size,
+		   gint *title_size)
 {
   gint *sizes = NULL;
   gint i;
@@ -247,8 +246,13 @@ build_sizes_table (FT_Face face,
     sizes[11] = 168;
     sizes[12] = 192;
     sizes[13] = 216;
+
     *alpha_size = 24;
+    *title_size = 48;
   } else {
+    gint alpha_diff = G_MAXINT;
+    gint title_diff = G_MAXINT;
+
     /* use fixed sizes */
     *n_sizes = face->num_fixed_sizes;
     sizes = g_new (gint, *n_sizes);
@@ -257,9 +261,14 @@ build_sizes_table (FT_Face face,
     for (i = 0; i < face->num_fixed_sizes; i++) {
       sizes[i] = face->available_sizes[i].height;
 
-      /* work out which font size to render */
-      if (face->available_sizes[i].height <= 24)
-        *alpha_size = face->available_sizes[i].height;
+      if ((gint) (abs (sizes[i] - 24)) < alpha_diff) {
+        alpha_diff = (gint) abs (sizes[i] - 24);
+        *alpha_size = sizes[i];
+      }
+      if ((gint) (abs (sizes[i] - 24)) < title_diff) {
+        title_diff = (gint) abs (sizes[i] - 24);
+        *title_size = sizes[i];
+      }
     }
   }
 
@@ -278,7 +287,7 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
   cairo_text_extents_t extents;
   cairo_font_extents_t font_extents;
   cairo_font_face_t *font;
-  gint *sizes = NULL, n_sizes, alpha_size;
+  gint *sizes = NULL, n_sizes, alpha_size, title_size;
   cairo_t *cr;
   cairo_surface_t *surface;
   FT_Face face = priv->face;
@@ -297,6 +306,9 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
     return;
   }
 
+  if (min_height != NULL)
+    *min_height = -1;
+
   surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
                                         SURFACE_SIZE, SURFACE_SIZE);
   cr = cairo_create (surface);
@@ -304,7 +316,7 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
   state = gtk_style_context_get_state (context);
   gtk_style_context_get_padding (context, state, &padding);
 
-  sizes = build_sizes_table (face, &n_sizes, &alpha_size);
+  sizes = build_sizes_table (face, &n_sizes, &alpha_size, &title_size);
 
   /* calculate size of pixmap to use */
   pixmap_width = padding.left + padding.right;
@@ -315,7 +327,7 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
   cairo_font_face_destroy (font);
 
   if (self->priv->font_supports_title) {
-      cairo_set_font_size (cr, sizes[TITLE_SIZE]);
+      cairo_set_font_size (cr, title_size);
       cairo_font_extents (cr, &font_extents);
       cairo_text_extents (cr, self->priv->font_name, &extents);
       pixmap_height += font_extents.ascent + font_extents.descent +
@@ -364,6 +376,9 @@ sushi_font_widget_size_request (GtkWidget *drawing_area,
 
   pixmap_height += padding.bottom + SECTION_SPACING;
 
+  if (min_height != NULL && *min_height == -1)
+    *min_height = pixmap_height;
+
   if (width != NULL)
     *width = pixmap_width;
 
@@ -406,7 +421,7 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
 {
   SushiFontWidget *self = SUSHI_FONT_WIDGET (drawing_area);
   SushiFontWidgetPrivate *priv = self->priv;
-  gint *sizes = NULL, n_sizes, alpha_size, pos_y = 0, i;
+  gint *sizes = NULL, n_sizes, alpha_size, title_size, pos_y = 0, i;
   cairo_font_face_t *font;
   FT_Face face = priv->face;
   GtkStyleContext *context;
@@ -425,7 +440,7 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
 
   gdk_cairo_set_source_rgba (cr, &color);
 
-  sizes = build_sizes_table (face, &n_sizes, &alpha_size);
+  sizes = build_sizes_table (face, &n_sizes, &alpha_size, &title_size);
 
   font = cairo_ft_font_face_create_for_ft_face (face, 0);
   cairo_set_font_face (cr, font);
@@ -436,7 +451,7 @@ sushi_font_widget_draw (GtkWidget *drawing_area,
   /* draw text */
 
   if (self->priv->font_supports_title) {
-    cairo_set_font_size (cr, sizes[TITLE_SIZE]);
+    cairo_set_font_size (cr, title_size);
     draw_string (cr, padding, self->priv->font_name, &pos_y);
   }
 
