@@ -244,6 +244,41 @@ comboxbox_three_finger_changed_callback (GtkWidget *combobox, void *data)
 	comboxbox_changed (combobox, GTK_BUILDER (data), "three-finger-click");
 }
 
+static GVariant *
+map_set_motion_acceleration (const GValue *value,
+                             const GVariantType *expected_type,
+                             gpointer user_data)
+{
+	g_return_val_if_fail (G_VALUE_HOLDS_DOUBLE (value), NULL);
+
+	gdouble val = g_value_get_double(value);
+
+	if (val < 1.0) {
+		/* under 1.0, process the value, because -1 is user to mean "default",
+		 * and (-1..1] is unused */
+		val -= -2;
+	}
+
+	return g_variant_new_double (val);
+}
+
+static gboolean
+map_get_motion_acceleration (GValue *value,
+                             GVariant *variant,
+                             gpointer user_data)
+{
+	g_return_val_if_fail (g_variant_type_equal (g_variant_get_type (variant), G_VARIANT_TYPE_DOUBLE), FALSE);
+
+	gdouble val = g_variant_get_double (variant);
+
+	if (val < -1)
+		val += 2;
+
+	g_value_set_double (value, val);
+
+	return TRUE;
+}
+
 /* Set up the property editors in the dialog. */
 static void
 setup_dialog (GtkBuilder *dialog)
@@ -286,9 +321,13 @@ setup_dialog (GtkBuilder *dialog)
 			  G_CALLBACK (event_box_button_press_event), NULL);
 
 	/* speed */
-	g_settings_bind (mouse_settings, "motion-acceleration",
+	gtk_scale_add_mark (GTK_SCALE (WID ("accel_scale")), 1.0, GTK_POS_BOTTOM, NULL);
+	gtk_scale_add_mark (GTK_SCALE (WID ("accel_scale")), 6.0, GTK_POS_BOTTOM, NULL);
+
+	g_settings_bind_with_mapping (mouse_settings, "motion-acceleration",
 		gtk_range_get_adjustment (GTK_RANGE (WID ("accel_scale"))), "value",
-		G_SETTINGS_BIND_DEFAULT);
+		G_SETTINGS_BIND_DEFAULT,
+		map_get_motion_acceleration, map_set_motion_acceleration, NULL, NULL);
 	g_settings_bind (mouse_settings, "motion-threshold",
 		gtk_range_get_adjustment (GTK_RANGE (WID ("sensitivity_scale"))), "value",
 		G_SETTINGS_BIND_DEFAULT);
@@ -346,9 +385,10 @@ setup_dialog (GtkBuilder *dialog)
 		gtk_widget_show (three_click_comboxbox);
 
 		/* speed */
-		g_settings_bind (touchpad_settings, "motion-acceleration",
+		g_settings_bind_with_mapping (touchpad_settings, "motion-acceleration",
 			gtk_range_get_adjustment (GTK_RANGE (WID ("touchpad_accel_scale"))), "value",
-			G_SETTINGS_BIND_DEFAULT);
+			G_SETTINGS_BIND_DEFAULT,
+			map_get_motion_acceleration, map_set_motion_acceleration, NULL, NULL);
 		g_settings_bind (touchpad_settings, "motion-threshold",
 			gtk_range_get_adjustment (GTK_RANGE (WID ("touchpad_sensitivity_scale"))), "value",
 			G_SETTINGS_BIND_DEFAULT);
